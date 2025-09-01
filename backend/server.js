@@ -81,7 +81,7 @@ class GoogleCloudAPIService {
       const response = await axios.get(url, {
         params: { key: this.apiKey },
         responseType: 'arraybuffer',
-        timeout: 10000
+        timeout: 30000 // Increased to 30 seconds for Google Cloud API
       });
 
       return {
@@ -127,11 +127,23 @@ class SupabaseCacheService {
         return { cached: false };
       }
 
-      // Update access metrics
+      // Update access metrics - increment access count
+      const { data: currentData } = await this.supabase
+        .from('heatmap_tiles')
+        .select('access_count')
+        .eq('data_type', dataType)
+        .eq('heatmap_type', heatmapType)
+        .eq('zoom_level', zoom)
+        .eq('tile_x', x)
+        .eq('tile_y', y)
+        .single();
+
+      const newAccessCount = (currentData?.access_count || 0) + 1;
+      
       await this.supabase
         .from('heatmap_tiles')
         .update({
-          access_count: supabase.sql`access_count + 1`,
+          access_count: newAccessCount,
           last_accessed: new Date().toISOString()
         })
         .eq('data_type', dataType)
@@ -443,10 +455,115 @@ class ExposureTrackingService {
       return { success: false, error: error.message };
     }
   }
+
+  // Get exposure history
+  async getExposureHistory(startTime, endTime, interval = '15min') {
+    try {
+      // Convert interval to minutes
+      const intervalMinutes = this.parseInterval(interval);
+      
+      // Get all exposure readings within the time range
+      const { data, error } = await this.supabase
+        .from('exposure_readings')
+        .select(`
+          reading_time,
+          air_quality_index,
+          total_pollen_index,
+          uv_index,
+          location_lat,
+          location_lng
+        `)
+        .gte('reading_time', startTime)
+        .lte('reading_time', endTime)
+        .order('reading_time', { ascending: true });
+
+      if (error) {
+        console.error('❌ Get exposure history error:', error);
+        return { success: false, error: error.message };
+      }
+
+      // Group data by intervals
+      const groupedData = this.groupDataByInterval(data, startTime, endTime, intervalMinutes);
+      
+      return { success: true, data: groupedData };
+    } catch (error) {
+      console.error('❌ Get exposure history error:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  // Parse interval string to minutes
+  parseInterval(interval) {
+    const match = interval.match(/^(\d+)(min|h|d)$/);
+    if (!match) return 15; // default to 15 minutes
+    
+    const value = parseInt(match[1]);
+    const unit = match[2];
+    
+    switch (unit) {
+      case 'min': return value;
+      case 'h': return value * 60;
+      case 'd': return value * 60 * 24;
+      default: return 15;
+    }
+  }
+
+  // Group data by time intervals
+  groupDataByInterval(data, startTime, endTime, intervalMinutes) {
+    const intervals = [];
+    const current = new Date(startTime);
+    const end = new Date(endTime);
+    
+    while (current <= end) {
+      const intervalStart = new Date(current);
+      const intervalEnd = new Date(current.getTime() + (intervalMinutes * 60 * 1000));
+      
+      // Find all readings in this interval
+      const intervalData = data.filter(reading => {
+        const readingTime = new Date(reading.reading_time);
+        return readingTime >= intervalStart && readingTime < intervalEnd;
+      });
+      
+      // Calculate averages for this interval
+      const aggregated = this.aggregateIntervalData(intervalData);
+      
+      intervals.push({
+        timestamp: intervalStart.toISOString(),
+        airQuality: aggregated.airQuality,
+        pollen: aggregated.pollen,
+        uv: aggregated.uv,
+        readingCount: intervalData.length
+      });
+      
+      current.setMinutes(current.getMinutes() + intervalMinutes);
+    }
+    
+    return intervals;
+  }
+
+  // Aggregate data for a single interval
+  aggregateIntervalData(readings) {
+    if (readings.length === 0) {
+      return { airQuality: 0, pollen: 0, uv: 0 };
+    }
+    
+    const total = readings.reduce((acc, reading) => {
+      acc.airQuality += reading.air_quality_index || 0;
+      acc.pollen += reading.total_pollen_index || 0;
+      acc.uv += reading.uv_index || 0;
+      return acc;
+    }, { airQuality: 0, pollen: 0, uv: 0 });
+    
+    return {
+      airQuality: total.airQuality / readings.length,
+      pollen: total.pollen / readings.length,
+      uv: total.uv / readings.length
+    };
+  }
 }
 
-const exposureService = new ExposureTrackingService(supabase);
-const cacheService = new SupabaseCacheService(supabase);
+let exposureService;
+let cacheService;
 
 // Main heatmap tile endpoint
 app.get('/api/heatmap/:dataType/:heatmapType/:zoom/:x/:y', async (req, res) => {
@@ -796,9 +913,50 @@ app.get('/api/exposure/alerts/:sessionId', async (req, res) => {
   }
 });
 
+// Get exposure history
+app.get('/api/exposure/history', async (req, res) => {
+  try {
+    const { startTime, endTime, interval = '15min' } = req.query;
+    
+    if (!startTime || !endTime) {
+      return res.status(400).json({
+        error: 'startTime and endTime are required'
+      });
+    }
+
+    const result = await exposureService.getExposureHistory(startTime, endTime, interval);
+    
+    if (result.success) {
+      res.json({
+        records: result.data,
+        metadata: {
+          startTime,
+          endTime,
+          interval,
+          recordCount: result.data.length,
+          timestamp: new Date().toISOString()
+        }
+      });
+    } else {
+      res.status(500).json({
+        error: 'Failed to get exposure history',
+        details: result.error
+      });
+    }
+  } catch (error) {
+    res.status(500).json({
+      error: 'Internal server error',
+      details: error.message
+    });
+  }
+});
+
 // Start server
 async function startServer() {
   await initializeSupabase();
+  // Instantiate services only after Supabase has been initialized
+  exposureService = new ExposureTrackingService(supabase);
+  cacheService = new SupabaseCacheService(supabase);
   
   app.listen(PORT, () => {
     console.log(`🚀 Environmental Cache Backend running on port ${PORT}`);

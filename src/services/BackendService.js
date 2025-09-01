@@ -3,10 +3,10 @@ import axios from 'axios';
 class BackendService {
   constructor() {
     // Backend server URL - update this when you deploy
-    this.baseURL = 'http://localhost:3000';
+    this.baseURL = 'http://172.20.10.11:3000';
     this.apiClient = axios.create({
       baseURL: this.baseURL,
-      timeout: 15000,
+      timeout: 45000, // Increased to 45 seconds for slow API responses
       headers: {
         'Content-Type': 'application/json',
       },

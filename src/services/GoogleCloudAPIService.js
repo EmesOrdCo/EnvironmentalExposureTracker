@@ -142,8 +142,8 @@ class GoogleCloudAPIService {
   async getAirQualityHeatmapTypes() {
     // No API endpoint exists for listing heatmap types
     // Return the documented allowed values from the API documentation
-    console.log('Using documented Air Quality heatmap types');
-    return {
+    console.log('✅ Using documented Air Quality heatmap types');
+    const types = {
       mapTypes: [
         { name: 'UAQI_RED_GREEN', displayName: 'Universal AQI (Red-Green)' },
         { name: 'UAQI_INDIGO_PERSIAN', displayName: 'Universal AQI (Indigo-Persian)' },
@@ -155,23 +155,66 @@ class GoogleCloudAPIService {
         { name: 'US_AQI', displayName: 'US Air Quality Index' }
       ]
     };
+    console.log('📋 Air Quality types returned:', types);
+    return types;
   }
 
   // Get available Pollen heatmap types
   async getPollenHeatmapTypes() {
     // No API endpoint exists for listing pollen heatmap types
     // Return the documented allowed values from the API documentation
-    console.log('Using documented Pollen heatmap types');
-    return {
+    console.log('✅ Using documented Pollen heatmap types');
+    const types = {
       mapTypes: [
         { name: 'TREE_UPI', displayName: 'Tree Pollen Index' },
         { name: 'GRASS_UPI', displayName: 'Grass Pollen Index' },
         { name: 'WEED_UPI', displayName: 'Weed Pollen Index' }
       ]
     };
+    console.log('📋 Pollen types returned:', types);
+    return types;
   }
 
-  // Get Air Quality data for specific location
+  // Get real-time air quality data using currentConditions endpoint
+  async getCurrentAirQuality(latitude, longitude) {
+    if (!this.apiKey) {
+      throw new Error('API key not configured');
+    }
+
+    try {
+      const url = `https://airquality.googleapis.com/v1/currentConditions:lookup?key=${this.apiKey}`;
+      
+      const requestBody = {
+        location: {
+          latitude: latitude,
+          longitude: longitude
+        },
+        extraComputations: [
+          "HEALTH_RECOMMENDATIONS",
+          "DOMINANT_POLLUTANT_CONCENTRATION",
+          "POLLUTANT_CONCENTRATION",
+          "LOCAL_AQI",
+          "POLLUTANT_ADDITIONAL_INFO"
+        ],
+        languageCode: "en"
+      };
+
+      const response = await axios.post(url, requestBody, {
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        timeout: 15000
+      });
+
+      console.log('✅ Real-time air quality data fetched successfully');
+      return response.data;
+    } catch (error) {
+      console.error('Error fetching real-time air quality data:', error);
+      throw error;
+    }
+  }
+
+  // Get Air Quality data for specific location (legacy method)
   async getAirQualityData(latitude, longitude) {
     if (!this.apiKey) {
       throw new Error('API key not configured');

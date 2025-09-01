@@ -12,7 +12,6 @@ import { StatusBar } from 'expo-status-bar';
 import { MaterialIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import ExposureCard from '../components/ExposureCard';
-import ExposureTrackingService from '../services/ExposureTrackingService';
 import { formatTimestamp } from '../utils/exposureUtils';
 
 const DashboardScreen = ({ navigation }) => {
@@ -21,67 +20,20 @@ const DashboardScreen = ({ navigation }) => {
     pollen: null,
     airQuality: null,
   });
-  const [isTracking, setIsTracking] = useState(false);
-  const [lastUpdate, setLastUpdate] = useState(null);
-  const [refreshing, setRefreshing] = useState(false);
+  const [isTracking] = useState(true); // Always tracking
+  const [lastUpdate] = useState(null);
+  const [refreshing] = useState(false);
 
   useEffect(() => {
-    initializeApp();
-    return () => {
-      // Cleanup when component unmounts
-    };
+    // Dashboard no longer manages tracking lifecycle
   }, []);
 
-  const initializeApp = async () => {
-    try {
-      await ExposureTrackingService.init();
-      const status = ExposureTrackingService.getTrackingStatus();
-      setIsTracking(status.isTracking);
-      setCurrentData(status.currentData);
-      setLastUpdate(status.lastUpdate);
-    } catch (error) {
-      console.error('Error initializing app:', error);
-      Alert.alert('Error', 'Failed to initialize the app');
-    }
-  };
+  const handleStartTracking = async () => {};
+  const handleStopTracking = async () => {};
 
-  const handleStartTracking = async () => {
-    try {
-      await ExposureTrackingService.startTracking();
-      setIsTracking(true);
-      updateData();
-    } catch (error) {
-      console.error('Error starting tracking:', error);
-      Alert.alert('Error', 'Failed to start tracking. Please check location permissions.');
-    }
-  };
+  const updateData = () => {};
 
-  const handleStopTracking = async () => {
-    try {
-      await ExposureTrackingService.stopTracking();
-      setIsTracking(false);
-    } catch (error) {
-      console.error('Error stopping tracking:', error);
-    }
-  };
-
-  const updateData = () => {
-    const data = ExposureTrackingService.getCurrentData();
-    setCurrentData(data);
-    setLastUpdate(data.lastUpdate);
-  };
-
-  const onRefresh = async () => {
-    setRefreshing(true);
-    try {
-      await ExposureTrackingService.updateEnvironmentalData();
-      updateData();
-    } catch (error) {
-      console.error('Error refreshing data:', error);
-    } finally {
-      setRefreshing(false);
-    }
-  };
+  const onRefresh = async () => {};
 
   const handleCardPress = (type) => {
     navigation.navigate('ExposureHistory', { type });
@@ -111,19 +63,17 @@ const DashboardScreen = ({ navigation }) => {
   const renderStatusBar = () => (
     <View style={styles.statusBar}>
       <View style={styles.statusItem}>
-        <MaterialIcons name="location-on" size={16} color="#666" />
+        <MaterialIcons name="location-on" size={16} color="#4CAF50" />
         <Text style={styles.statusText}>
-          {isTracking ? 'Tracking Active' : 'Not Tracking'}
+          Auto-Tracking Active
         </Text>
       </View>
-      {lastUpdate && (
-        <View style={styles.statusItem}>
-          <MaterialIcons name="access-time" size={16} color="#666" />
-          <Text style={styles.statusText}>
-            {formatTimestamp(lastUpdate)}
-          </Text>
-        </View>
-      )}
+      <View style={styles.statusItem}>
+        <MaterialIcons name="access-time" size={16} color="#666" />
+        <Text style={styles.statusText}>
+          Every 15 minutes
+        </Text>
+      </View>
     </View>
   );
 
@@ -158,9 +108,15 @@ const DashboardScreen = ({ navigation }) => {
         {/* Status Bar */}
         {renderStatusBar()}
 
-        {/* Tracking Button */}
-        <View style={styles.trackingSection}>
-          {renderTrackingButton()}
+        {/* Auto-tracking status */}
+        <View style={styles.autoTrackingSection}>
+          <View style={styles.autoTrackingCard}>
+            <MaterialIcons name="auto-awesome" size={24} color="#4CAF50" />
+            <Text style={styles.autoTrackingTitle}>Auto-Tracking Active</Text>
+            <Text style={styles.autoTrackingSubtitle}>
+              Environmental data is being sampled every 15 minutes
+            </Text>
+          </View>
         </View>
 
         {/* Exposure Cards */}
@@ -367,21 +323,31 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     marginBottom: 24,
   },
-  quickActionsGrid: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-  },
   quickActionButton: {
-    alignItems: 'center',
-    padding: 16,
-    backgroundColor: '#ffffff',
     borderRadius: 12,
     elevation: 2,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
+    shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
-    shadowRadius: 2,
-    minWidth: 80,
+    shadowRadius: 4,
+  },
+  quickActionGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 16,
+    paddingHorizontal: 24,
+    borderRadius: 12,
+  },
+  quickActionText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '600',
+    marginLeft: 8,
+  },
+  quickActionsGrid: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
   },
   quickActionIcon: {
     width: 48,
@@ -396,6 +362,32 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '500',
     color: '#333',
+  },
+  autoTrackingSection: {
+    paddingHorizontal: 20,
+    marginBottom: 24,
+  },
+  autoTrackingCard: {
+    backgroundColor: '#f8fff8',
+    borderRadius: 12,
+    padding: 20,
+    borderLeftWidth: 4,
+    borderLeftColor: '#4CAF50',
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  autoTrackingTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#4CAF50',
+    marginLeft: 12,
+    flex: 1,
+  },
+  autoTrackingSubtitle: {
+    fontSize: 12,
+    color: '#666',
+    marginLeft: 12,
+    marginTop: 4,
   },
 });
 

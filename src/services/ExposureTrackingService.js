@@ -10,6 +10,8 @@ class ExposureTrackingService {
     this.samplingInterval = 5 * 60 * 1000; // 5 minutes
     this.deviceId = null;
     this.isTracking = false;
+    this.lastReadingData = null;
+    this.lastUpdate = null;
   }
 
   // Initialize the service
@@ -124,21 +126,12 @@ class ExposureTrackingService {
     }
   }
 
-  // Start periodic sampling
+  // Start periodic sampling (disabled - using ExposureSamplingService instead)
   startPeriodicSampling() {
-    if (this.trackingInterval) {
-      clearInterval(this.trackingInterval);
-    }
-
-    // Take initial reading
-    this.takeExposureReading();
-
-    // Set up periodic readings
-    this.trackingInterval = setInterval(() => {
-      this.takeExposureReading();
-    }, this.samplingInterval);
-
-    console.log(`⏰ Started periodic sampling every ${this.samplingInterval / 1000} seconds`);
+    // This method is disabled because we're now using ExposureSamplingService
+    // which provides better real-time data sampling every 15 minutes
+    console.log('ℹ️ ExposureTrackingService.startPeriodicSampling() disabled - using ExposureSamplingService instead');
+    return;
   }
 
   // Stop periodic sampling
@@ -150,36 +143,61 @@ class ExposureTrackingService {
     }
   }
 
-  // Take a single exposure reading
+  // Take a single exposure reading (disabled - using ExposureSamplingService instead)
   async takeExposureReading() {
-    if (!this.isTracking || !this.currentSessionId) {
-      console.warn('⚠️ Cannot take reading - no active session');
-      return;
+    // This method is disabled because we're now using ExposureSamplingService
+    // which provides better real-time data sampling
+    console.log('ℹ️ ExposureTrackingService.takeExposureReading() disabled - using ExposureSamplingService instead');
+    return;
+  }
+
+  // Expose a UI-friendly snapshot of the latest reading
+  getCurrentData() {
+    if (!this.lastReadingData) {
+      return {
+        uv: null,
+        pollen: null,
+        airQuality: null,
+        lastUpdate: null
+      };
     }
 
-    try {
-      // Get current location
-      const location = await this.getCurrentLocation();
-      
-      // Get environmental data from database cache
-      const readingData = await this.getEnvironmentalData(location);
-      
-      if (readingData) {
-        // Record reading on backend
-        await this.backendService.apiClient.post('/api/exposure/reading', {
-          sessionId: this.currentSessionId,
-          readingData: {
-            ...readingData,
-            location: location
-          }
-        });
+    const uv = this.lastReadingData.uv_index != null ? {
+      value: this.lastReadingData.uv_index,
+      level: this.lastReadingData.uv_level
+    } : null;
 
-        console.log('📊 Recorded exposure reading:', readingData);
-      } else {
-        console.log('⚠️ No environmental data available for this location');
+    const pollen = this.lastReadingData.total_pollen_index != null ? {
+      value: this.lastReadingData.total_pollen_index,
+      level: this.lastReadingData.pollen_level
+    } : null;
+
+    const airQuality = this.lastReadingData.air_quality_index != null ? {
+      value: this.lastReadingData.air_quality_index,
+      level: this.lastReadingData.air_quality_level
+    } : null;
+
+    return {
+      uv,
+      pollen,
+      airQuality,
+      lastUpdate: this.lastUpdate
+    };
+  }
+
+  // Manually refresh environmental data without requiring an active session
+  async updateEnvironmentalData() {
+    try {
+      const location = await this.getCurrentLocation();
+      const readingData = await this.getEnvironmentalData(location);
+      if (readingData) {
+        this.lastReadingData = readingData;
+        this.lastUpdate = new Date().toISOString();
       }
+      return true;
     } catch (error) {
-      console.error('❌ Failed to take exposure reading:', error);
+      console.error('❌ Failed to update environmental data:', error);
+      return false;
     }
   }
 
@@ -406,11 +424,18 @@ class ExposureTrackingService {
 
   // Get tracking status
   getTrackingStatus() {
+    const currentData = this.getCurrentData();
     return {
       isTracking: this.isTracking,
       sessionId: this.currentSessionId,
       deviceId: this.deviceId,
-      samplingInterval: this.samplingInterval
+      samplingInterval: this.samplingInterval,
+      currentData: {
+        uv: currentData.uv,
+        pollen: currentData.pollen,
+        airQuality: currentData.airQuality
+      },
+      lastUpdate: currentData.lastUpdate
     };
   }
 
@@ -422,6 +447,11 @@ class ExposureTrackingService {
       this.stopPeriodicSampling();
       this.startPeriodicSampling();
     }
+  }
+
+  // Cleanup resources
+  cleanup() {
+    this.stopPeriodicSampling();
   }
 }
 

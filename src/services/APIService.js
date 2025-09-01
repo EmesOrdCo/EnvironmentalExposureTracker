@@ -97,6 +97,33 @@ class APIService {
     };
   }
 
+  // Get current location
+  async getCurrentLocation() {
+    try {
+      // Import LocationService dynamically to avoid circular dependencies
+      const LocationService = require('./LocationService').default;
+      return await LocationService.getCurrentLocation();
+    } catch (error) {
+      console.error('Error getting current location:', error);
+      return null;
+    }
+  }
+
+  // Get Air Quality data for specific time
+  async getAirQualityData(latitude, longitude, timestamp) {
+    throw new Error('Mock data not allowed - use real heatmap sampling only');
+  }
+
+  // Get Pollen data for specific time
+  async getPollenData(latitude, longitude, timestamp) {
+    throw new Error('Mock data not allowed - use real heatmap sampling only');
+  }
+
+  // Get UV data for specific time
+  async getUVData(latitude, longitude, timestamp) {
+    throw new Error('Mock data not allowed - use real heatmap sampling only');
+  }
+
   // Get Pollen data (Google Cloud primary)
   async fetchPollen(latitude, longitude) {
     // Skip pollen forecast API calls - focus only on heatmap tiles

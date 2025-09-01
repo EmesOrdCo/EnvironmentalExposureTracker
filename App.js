@@ -10,10 +10,13 @@ import DashboardScreen from './src/screens/DashboardScreen';
 import AlertsScreen from './src/screens/AlertsScreen';
 import MapScreen from './src/screens/MapScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
+import HistoryScreen from './src/screens/HistoryScreen';
 
 // Import services
 import ExposureTrackingService from './src/services/ExposureTrackingService';
+import ExposureSamplingService from './src/services/ExposureSamplingService';
 import APIService from './src/services/APIService';
+import HeatmapService from './src/services/HeatmapService';
 
 const Tab = createBottomTabNavigator();
 
@@ -49,14 +52,23 @@ export default function App() {
     // Initialize the exposure tracking service when app starts
     const initializeApp = async () => {
       try {
-            // Initialize Google Cloud API with the known API key
-            const apiKey = 'AIzaSyCCNN19KhPTamJDozHgega-hoojK-n-a7Y';
-            console.log('Initializing Google Cloud API with key:', apiKey.substring(0, 10) + '...');
-            await APIService.initGoogleCloudAPI(apiKey);
-        
-        // Initialize exposure tracking service
-        await ExposureTrackingService.init();
-        console.log('App initialized successfully');
+                    // Initialize Google Cloud API with the known API key
+        const apiKey = 'AIzaSyCCNN19KhPTamJDozHgega-hoojK-n-a7Y';
+        console.log('Initializing Google Cloud API with key:', apiKey.substring(0, 10) + '...');
+        await APIService.initGoogleCloudAPI(apiKey);
+    
+        // Initialize HeatmapService with API key
+        HeatmapService.initialize(apiKey);
+        console.log('HeatmapService initialized');
+    
+    // Initialize exposure tracking service
+    await ExposureTrackingService.initialize();
+    
+    // Start automatic environmental sampling
+    await ExposureSamplingService.startSampling();
+           console.log('✅ Auto-tracking started - environmental data sampling every hour');
+    
+    console.log('App initialized successfully');
       } catch (error) {
         console.error('Failed to initialize app:', error);
       }
@@ -67,6 +79,7 @@ export default function App() {
     // Cleanup when app unmounts
     return () => {
       ExposureTrackingService.cleanup();
+      ExposureSamplingService.stopSampling();
     };
   }, []);
 
@@ -124,7 +137,7 @@ export default function App() {
         />
         <Tab.Screen 
           name="History" 
-          component={ExposureHistoryScreen}
+          component={HistoryScreen}
           options={{ title: 'History' }}
         />
         <Tab.Screen 

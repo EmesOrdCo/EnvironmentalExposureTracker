@@ -11,22 +11,33 @@ const HeatmapMap = ({
   selectedType, 
   selectedHeatmapTypes,
   onMapReady,
-  onRegionChange 
+  onRegionChange,
+  onOverlayStateChange
 }) => {
+  const [isLoadingTiles, setIsLoadingTiles] = useState(false);
+  const [isClearingOverlays, setIsClearingOverlays] = useState(false);
+  const [currentActiveOverlay, setCurrentActiveOverlay] = useState(null);
+  const [activeOverlayCount, setActiveOverlayCount] = useState(0);
      const webViewRef = useRef(null);
    const [mapReady, setMapReady] = useState(false);
    const [currentViewport, setCurrentViewport] = useState(null);
+   const [lastViewport, setLastViewport] = useState(null);
    const updateTimeoutRef = useRef(null);
    const lastUpdateTimeRef = useRef({});
-   const CACHE_DURATION = 30 * 60 * 1000; // 30 minutes instead of 5
-   const ZOOM_CACHE_THRESHOLD = 8; // Only fetch fresh data at zoom > 8
-   const GRID_SIZE = 0.5; // 0.5 degree geographic grid
+   const tileCacheRef = useRef(new Map()); // Cache actual tile data
+   const CACHE_DURATION = 60 * 60 * 1000; // 1 hour (increased for better caching)
+   const ZOOM_CACHE_THRESHOLD = 6; // Lower threshold for more aggressive caching
+   const GRID_SIZE = 0.25; // Smaller grid for more precise caching
+   const DEBOUNCE_DELAY = 200; // Reduced debounce for faster response
+   const MAX_CONCURRENT_TILES = 8; // Increased concurrent requests
+   const ZOOM_DEBOUNCE_DELAY = 100; // Faster debounce for zoom changes
+   const PAN_DEBOUNCE_DELAY = 150; // Medium debounce for pan changes
    
-   // Data freshness per type (in milliseconds)
+   // Data freshness per type (in milliseconds) - optimized for faster response
    const DATA_FRESHNESS = {
-     airQuality: 60 * 60 * 1000,    // 1 hour
-     pollen: 24 * 60 * 60 * 1000,   // 24 hours
-     uv: 30 * 60 * 1000             // 30 minutes
+     airQuality: 30 * 60 * 1000,    // 30 minutes (reduced for more frequent updates)
+     pollen: 12 * 60 * 60 * 1000,   // 12 hours (reduced for better responsiveness)
+     uv: 15 * 60 * 1000             // 15 minutes (reduced for more frequent updates)
    };
 
    // Clear cache for specific overlay type
@@ -37,7 +48,125 @@ const HeatmapMap = ({
      keysToRemove.forEach(key => {
        delete lastUpdateTimeRef.current[key];
      });
-     console.log(`Cleared cache for ${overlayType} (${keysToRemove.length} entries)`);
+     
+     // Clear tile cache for this overlay type
+     const tileKeysToRemove = Array.from(tileCacheRef.current.keys()).filter(key => 
+       key.includes(overlayType)
+     );
+     tileKeysToRemove.forEach(key => {
+       tileCacheRef.current.delete(key);
+     });
+     
+     console.log(`Cleared cache for ${overlayType} (${keysToRemove.length} time entries, ${tileKeysToRemove.length} tile entries)`);
+   };
+
+   // Cleanup old cache entries to prevent memory issues
+   const cleanupCache = () => {
+     const now = Date.now();
+     const maxCacheAge = 60 * 60 * 1000; // 1 hour
+     
+     // Cleanup time cache
+     Object.keys(lastUpdateTimeRef.current).forEach(key => {
+       if (now - lastUpdateTimeRef.current[key] > maxCacheAge) {
+         delete lastUpdateTimeRef.current[key];
+       }
+     });
+     
+     // Cleanup tile cache (keep only recent entries)
+     const maxTileCacheSize = 50;
+     if (tileCacheRef.current.size > maxTileCacheSize) {
+       const entries = Array.from(tileCacheRef.current.entries());
+       const sortedEntries = entries.sort((a, b) => {
+         // Sort by access time (we'll use a simple timestamp for now)
+         return 0; // Keep it simple for now
+       });
+       
+       // Remove oldest entries
+       const toRemove = sortedEntries.slice(0, tileCacheRef.current.size - maxTileCacheSize);
+       toRemove.forEach(([key]) => {
+         tileCacheRef.current.delete(key);
+       });
+       
+       console.log(`Cleaned up ${toRemove.length} old tile cache entries`);
+     }
+   };
+
+   // Cleanup function to prevent memory leaks
+   const cleanup = () => {
+     if (updateTimeoutRef.current) {
+       clearTimeout(updateTimeoutRef.current);
+       updateTimeoutRef.current = null;
+     }
+     cleanupCache();
+   };
+
+   // Detect if viewport change is zoom or pan
+   const getViewportChangeType = (newViewport, oldViewport) => {
+     if (!oldViewport) return 'initial';
+     
+     const zoomChanged = newViewport.zoom !== oldViewport.zoom;
+     const centerChanged = 
+       Math.abs(newViewport.center.lat - oldViewport.center.lat) > 0.001 ||
+       Math.abs(newViewport.center.lng - oldViewport.center.lng) > 0.001;
+     
+     if (zoomChanged) return 'zoom';
+     if (centerChanged) return 'pan';
+     return 'none';
+   };
+
+   // Get appropriate debounce delay based on change type
+   const getDebounceDelay = (changeType) => {
+     switch (changeType) {
+       case 'zoom': return ZOOM_DEBOUNCE_DELAY;
+       case 'pan': return PAN_DEBOUNCE_DELAY;
+       default: return DEBOUNCE_DELAY;
+     }
+   };
+
+   // Fetch tiles with progressive loading
+   const fetchTilesWithProgress = async (type, heatmapType, viewport, zoom) => {
+     try {
+       const tiles = await HeatmapService.getTilesForViewport(type, heatmapType, viewport, zoom);
+       return tiles;
+     } catch (error) {
+       console.error('Error in fetchTilesWithProgress:', error);
+       return [];
+     }
+   };
+
+   // Send tiles to WebView with optimization and faster response
+   const sendTilesToWebView = (tiles, overlayType, heatmapType) => {
+     if (!webViewRef.current) {
+       console.log('WebView not ready');
+       return;
+     }
+     
+     if (tiles.length > 0) {
+       console.log(`Sending ${tiles.length} tiles to WebView for ${overlayType} ${heatmapType}`);
+       
+       // Optimize data transfer by compressing tile data
+       const optimizedTiles = tiles.map(({ x, y, tile }) => ({
+         x,
+         y,
+         data: Array.from(new Uint8Array(tile.data)),
+         bounds: HeatmapService.tileToLatLngBounds(x, y, currentViewport.zoom)
+       }));
+       
+       webViewRef.current.postMessage(JSON.stringify({
+         type: 'update_heatmap',
+         overlayType: overlayType,
+         heatmapType: heatmapType,
+         tiles: optimizedTiles
+       }));
+     } else {
+       console.log('No tiles available from API');
+       webViewRef.current.postMessage(JSON.stringify({
+         type: 'update_heatmap',
+         overlayType: overlayType,
+         heatmapType: heatmapType,
+         tiles: []
+       }));
+     }
    };
 
    // Generate grid-based cache key for geographic clustering
@@ -159,8 +288,8 @@ const HeatmapMap = ({
                                       function updateHeatmapOverlay(overlayType, heatmapType, tiles) {
                console.log('WebView: Updating heatmap overlay for', overlayType, 'with', tiles.length, 'tiles');
                
-               // Clear existing overlays for this type only
-               clearHeatmapOverlays(overlayType);
+               // ALWAYS clear ALL overlays first to ensure only one type is active
+               clearAllOverlays();
                
                                                if (!tiles || tiles.length === 0) {
                   console.log('WebView: No real tiles available from API');
@@ -241,19 +370,43 @@ const HeatmapMap = ({
                 });
                
                console.log('WebView: Heatmap overlay update complete');
+               
+               // Send overlay count to React Native
+               window.ReactNativeWebView.postMessage(JSON.stringify({
+                 type: 'overlays_updated',
+                 count: heatmapOverlays.length,
+                 overlayType: overlayType
+               }));
              }
             
                          function clearHeatmapOverlays(overlayType) {
+               console.log('WebView: Clearing overlays for type:', overlayType);
+               console.log('WebView: Current overlays count:', heatmapOverlays.length);
+               
                // Remove overlays for specific type or all if no type specified
+               const overlaysToRemove = [];
                heatmapOverlays = heatmapOverlays.filter(overlay => {
-                 if (overlayType && overlay.dataset.overlayType !== overlayType) {
+                 const overlayTypeAttr = overlay.dataset.overlayType;
+                 console.log('WebView: Checking overlay with type:', overlayTypeAttr, 'against:', overlayType);
+                 
+                 if (overlayType && overlayTypeAttr !== overlayType) {
                    return true; // Keep this overlay
                  }
+                 
+                 // Mark for removal
+                 overlaysToRemove.push(overlay);
+                 return false; // Remove this overlay
+               });
+               
+               // Remove from DOM
+               overlaysToRemove.forEach(overlay => {
                  if (overlay.parentNode) {
                    overlay.parentNode.removeChild(overlay);
                  }
-                 return false; // Remove this overlay
                });
+               
+               console.log('WebView: Removed', overlaysToRemove.length, 'overlays for type:', overlayType);
+               console.log('WebView: Remaining overlays:', heatmapOverlays.length);
              }
              
              function clearAllOverlays() {
@@ -265,6 +418,11 @@ const HeatmapMap = ({
                });
                heatmapOverlays = [];
                console.log('WebView: Cleared all overlays');
+               
+               // Send confirmation to React Native
+               window.ReactNativeWebView.postMessage(JSON.stringify({
+                 type: 'overlays_cleared'
+               }));
              }
             
                          function setOverlayVisibility(overlayType, visible) {
@@ -282,30 +440,46 @@ const HeatmapMap = ({
              window.clearHeatmapOverlays = clearHeatmapOverlays;
              window.clearAllOverlays = clearAllOverlays;
              
+             // Debug function to show current overlays
+             window.debugOverlays = function() {
+               console.log('WebView: Current overlays count:', heatmapOverlays.length);
+               heatmapOverlays.forEach((overlay, index) => {
+                 console.log('WebView: Overlay', index, 'type:', overlay.dataset.overlayType, 'visible:', overlay.style.display !== 'none');
+               });
+             };
+             
                           // Listen for messages from React Native
              window.addEventListener('message', function(event) {
                try {
                  const data = JSON.parse(event.data);
                  console.log('WebView: Received message:', data.type);
                  
-                                    switch (data.type) {
-                     case 'update_heatmap':
-                       console.log('WebView: Calling updateHeatmapOverlay with', data.tiles ? data.tiles.length : 0, 'tiles');
-                       if (data.tiles && data.tiles.length > 0) {
-                         console.log('WebView: First tile data length:', data.tiles[0].data ? data.tiles[0].data.length : 'no data');
-                         console.log('WebView: First tile bounds:', data.tiles[0].bounds);
-                       }
-                       updateHeatmapOverlay(data.overlayType || 'airQuality', data.heatmapType || 'US_AQI', data.tiles);
-                       break;
-                     case 'set_overlay_visibility':
-                       console.log('WebView: Setting overlay visibility for', data.overlayType, 'to', data.visible);
-                       setOverlayVisibility(data.overlayType || 'airQuality', data.visible);
-                       break;
-                     case 'clear_all_overlays':
-                       console.log('WebView: Clearing all overlays');
-                       clearAllOverlays();
-                       break;
-                   }
+                 // Process messages immediately for faster response
+                 switch (data.type) {
+                   case 'update_heatmap':
+                     console.log('WebView: Calling updateHeatmapOverlay with', data.tiles ? data.tiles.length : 0, 'tiles');
+                     if (data.tiles && data.tiles.length > 0) {
+                       console.log('WebView: First tile data length:', data.tiles[0].data ? data.tiles[0].data.length : 'no data');
+                       console.log('WebView: First tile bounds:', data.tiles[0].bounds);
+                     }
+                     updateHeatmapOverlay(data.overlayType || 'airQuality', data.heatmapType || 'US_AQI', data.tiles);
+                     break;
+                   case 'set_overlay_visibility':
+                     console.log('WebView: Setting overlay visibility for', data.overlayType, 'to', data.visible);
+                     setOverlayVisibility(data.overlayType || 'airQuality', data.visible);
+                     break;
+                   case 'clear_all_overlays':
+                     console.log('WebView: Clearing all overlays');
+                     clearAllOverlays();
+                     break;
+                   case 'overlays_cleared':
+                     console.log('WebView: Confirmed all overlays cleared');
+                     break;
+                   case 'debug_overlays':
+                     console.log('WebView: Debug overlays requested');
+                     window.debugOverlays();
+                     break;
+                 }
                } catch (error) {
                  console.error('WebView: Error handling message:', error);
                }
@@ -339,6 +513,24 @@ const HeatmapMap = ({
           });
           if (onRegionChange) onRegionChange(data);
           break;
+          
+                 case 'overlays_cleared':
+           console.log('React Native: Received overlays cleared confirmation');
+           setIsClearingOverlays(false);
+           setActiveOverlayCount(0);
+           if (onOverlayStateChange) {
+             onOverlayStateChange({ isClearing: false, isLoading: false });
+           }
+           break;
+           
+         case 'overlays_updated':
+           console.log('React Native: Overlays updated - count:', data.count, 'type:', data.overlayType);
+           setActiveOverlayCount(data.count);
+           setCurrentActiveOverlay(data.overlayType);
+           if (onOverlayStateChange) {
+             onOverlayStateChange({ isClearing: false, isLoading: false });
+           }
+           break;
       }
     } catch (error) {
       console.error('Error parsing WebView message:', error);
@@ -357,22 +549,52 @@ const HeatmapMap = ({
      if (mapReady && currentViewport) {
        console.log('Map is ready and has viewport, updating overlays...');
        
-       // Clear cache for the selected overlay type to ensure fresh data
-       clearCacheForOverlay(selectedType);
+       // Clear any existing timeout to prevent race conditions
+       if (updateTimeoutRef.current) {
+         clearTimeout(updateTimeoutRef.current);
+       }
        
-       // Only update the currently selected overlay type
-       if (overlaySettings[selectedType]) {
-         console.log(`Updating overlay for selected type: ${selectedType}`);
-         updateHeatmapOverlay(selectedType);
-       } else {
-         console.log(`Selected type ${selectedType} is disabled, clearing all overlays`);
-         // Clear all overlays if selected type is disabled
-         if (webViewRef.current) {
+       // Debounce the overlay update to prevent rapid changes
+       updateTimeoutRef.current = setTimeout(() => {
+         // Only clear overlays if we're switching to a different type or disabling current type
+         const shouldClear = !overlaySettings[selectedType] || 
+                           (currentActiveOverlay && currentActiveOverlay !== selectedType);
+         
+         if (shouldClear && webViewRef.current) {
+           console.log('Clearing overlays due to type change or disable');
+           setIsClearingOverlays(true);
+           if (onOverlayStateChange) {
+             onOverlayStateChange({ isClearing: true, isLoading: false });
+           }
            webViewRef.current.postMessage(JSON.stringify({
              type: 'clear_all_overlays'
            }));
+           
+           // Wait for clearing to complete before loading new overlay
+           setTimeout(() => {
+             if (overlaySettings[selectedType]) {
+               console.log(`Loading new overlay for selected type: ${selectedType}`);
+               setIsClearingOverlays(false);
+               setCurrentActiveOverlay(selectedType);
+               if (onOverlayStateChange) {
+                 onOverlayStateChange({ isClearing: false, isLoading: true });
+               }
+               updateHeatmapOverlay(selectedType);
+             } else {
+               setIsClearingOverlays(false);
+               setCurrentActiveOverlay(null);
+               if (onOverlayStateChange) {
+                 onOverlayStateChange({ isClearing: false, isLoading: false });
+               }
+             }
+           }, 200); // Increased delay for more stable clearing
+         } else if (overlaySettings[selectedType]) {
+           // Just update the current overlay without clearing
+           console.log(`Updating existing overlay for selected type: ${selectedType}`);
+           setCurrentActiveOverlay(selectedType);
+           updateHeatmapOverlay(selectedType);
          }
-       }
+       }, 150); // Debounce delay for settings changes
      } else {
        console.log('Cannot update overlays - map not ready or no viewport');
      }
@@ -393,22 +615,28 @@ const HeatmapMap = ({
 
      // Update overlays when viewport changes (map movement/zoom)
    useEffect(() => {
-     if (mapReady && currentViewport) {
-       // Only update the currently selected overlay type when map moves
-       if (overlaySettings[selectedType]) {
-         // Clear any existing timeout
-         if (updateTimeoutRef.current) {
-           clearTimeout(updateTimeoutRef.current);
-         }
-         
-         // Debounce the update to prevent rapid calls
-         updateTimeoutRef.current = setTimeout(() => {
-           console.log(`Viewport changed, updating selected overlay: ${selectedType}`);
-           updateHeatmapOverlay(selectedType);
-         }, 300); // 300ms delay
+     if (mapReady && currentViewport && overlaySettings[selectedType]) {
+       const changeType = getViewportChangeType(currentViewport, lastViewport);
+       const debounceDelay = getDebounceDelay(changeType);
+       
+       console.log(`Viewport change detected: ${changeType} (delay: ${debounceDelay}ms)`);
+       
+       // Clear any existing timeout
+       if (updateTimeoutRef.current) {
+         clearTimeout(updateTimeoutRef.current);
        }
+       
+       // Use different debounce delays for different change types
+       updateTimeoutRef.current = setTimeout(() => {
+         console.log(`Viewport ${changeType} complete, updating selected overlay: ${selectedType}`);
+         cleanupCache(); // Cleanup old cache entries
+         updateHeatmapOverlay(selectedType);
+       }, debounceDelay);
+       
+       // Update last viewport for next comparison
+       setLastViewport(currentViewport);
      }
-   }, [currentViewport?.bounds?.north, currentViewport?.bounds?.south, currentViewport?.bounds?.east, currentViewport?.bounds?.west, currentViewport?.zoom]);
+   }, [currentViewport?.bounds?.north, currentViewport?.bounds?.south, currentViewport?.bounds?.east, currentViewport?.bounds?.west, currentViewport?.zoom, selectedType, overlaySettings]);
 
      // Update heatmap overlay
    const updateHeatmapOverlay = async (overlayType = selectedType) => {
@@ -448,6 +676,7 @@ const HeatmapMap = ({
      }
 
      try {
+       setIsLoadingTiles(true);
        const type = overlayType === 'airQuality' ? 'airquality' : overlayType;
        const heatmapType = overlayType === 'pollen' 
          ? (selectedHeatmapTypes?.pollen || 'TREE_UPI')
@@ -455,7 +684,18 @@ const HeatmapMap = ({
        
        console.log('Fetching tiles for:', { type, heatmapType, viewport: currentViewport });
        
-       const tiles = await HeatmapService.getTilesForViewport(
+       // Check tile cache first
+       const cacheKey = `${type}_${heatmapType}_${currentViewport.zoom}_${preciseCacheKey}`;
+       const cachedTiles = tileCacheRef.current.get(cacheKey);
+       
+       if (cachedTiles) {
+         console.log(`Using cached tiles for ${cacheKey} (${cachedTiles.length} tiles)`);
+         sendTilesToWebView(cachedTiles, overlayType, heatmapType);
+         return;
+       }
+       
+       // Fetch tiles with progress tracking
+       const tiles = await fetchTilesWithProgress(
          type,
          heatmapType,
          currentViewport,
@@ -464,41 +704,32 @@ const HeatmapMap = ({
 
        console.log(`Received ${tiles.length} tiles from HeatmapService`);
 
+       // Cache the tiles
+       tileCacheRef.current.set(cacheKey, tiles);
+       
        // Update the cache timestamp for both grid and precise cache
        lastUpdateTimeRef.current[gridCacheKey] = now;
        lastUpdateTimeRef.current[preciseCacheKey] = now;
 
-       // Send tiles to WebView
-       if (webViewRef.current) {
-         if (tiles.length > 0) {
-           console.log(`Sending ${tiles.length} tiles to WebView for ${type} ${heatmapType}`);
-           webViewRef.current.postMessage(JSON.stringify({
-             type: 'update_heatmap',
-             overlayType: overlayType,
-             heatmapType: type,
-             tiles: tiles.map(({ x, y, tile }) => ({
-               x,
-               y,
-               data: Array.from(new Uint8Array(tile.data)),
-               bounds: HeatmapService.tileToLatLngBounds(x, y, currentViewport.zoom)
-             }))
-           }));
-         } else {
-           console.log('No tiles available from API');
-           webViewRef.current.postMessage(JSON.stringify({
-             type: 'update_heatmap',
-             overlayType: overlayType,
-             heatmapType: type,
-             tiles: []
-           }));
-         }
-       } else {
-         console.log('WebView not ready');
-       }
+       // Send tiles to WebView (overlays already cleared by settings effect if needed)
+       sendTilesToWebView(tiles, overlayType, heatmapType);
+       
      } catch (error) {
        console.error('Error updating heatmap overlay:', error);
+     } finally {
+       setIsLoadingTiles(false);
+       if (onOverlayStateChange) {
+         onOverlayStateChange({ isClearing: false, isLoading: false });
+       }
      }
    };
+
+     // Cleanup on unmount
+     useEffect(() => {
+       return () => {
+         cleanup();
+       };
+     }, []);
 
      // Remove the overlay visibility toggle effect since we enforce single overlay visibility
 

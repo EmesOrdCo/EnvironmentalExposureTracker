@@ -1,5 +1,6 @@
 import axios from 'axios';
 import backendService from './BackendService';
+import googleCloudAPIService from './GoogleCloudAPIService';
 
 class HeatmapService {
   constructor() {
@@ -7,6 +8,12 @@ class HeatmapService {
     this.cacheTimeout = 10 * 60 * 1000; // 10 minutes
     this.tileSize = 256; // Standard tile size
     this.backendService = backendService;
+    this.googleCloudAPI = googleCloudAPIService;
+  }
+
+  // Initialize with API key
+  initialize(apiKey) {
+    this.googleCloudAPI.setAPIKey(apiKey);
   }
 
   // Generate cache key for tiles
@@ -69,9 +76,13 @@ class HeatmapService {
       const result = await this.backendService.getHeatmapTile('airquality', heatmapType, zoom, x, y);
       
       if (result.success) {
-        this.cacheTile(cacheKey, result.data);
+        const tileObj = {
+          data: new Uint8Array(result.data),
+          contentType: result.contentType || 'image/png'
+        };
+        this.cacheTile(cacheKey, tileObj);
         console.log(`✅ Backend: Successfully fetched Air Quality tile: ${cacheKey}`);
-        return result.data;
+        return tileObj;
       } else {
         console.error('❌ Backend: Failed to fetch Air Quality tile:', result.error);
         throw new Error(result.error);
@@ -97,9 +108,13 @@ class HeatmapService {
       const result = await this.backendService.getHeatmapTile('pollen', heatmapType, zoom, x, y);
       
       if (result.success) {
-        this.cacheTile(cacheKey, result.data);
+        const tileObj = {
+          data: new Uint8Array(result.data),
+          contentType: result.contentType || 'image/png'
+        };
+        this.cacheTile(cacheKey, tileObj);
         console.log(`✅ Backend: Successfully fetched Pollen tile: ${cacheKey}`);
-        return result.data;
+        return tileObj;
       } else {
         console.error('❌ Backend: Failed to fetch Pollen tile:', result.error);
         throw new Error(result.error);
@@ -110,17 +125,21 @@ class HeatmapService {
     }
   }
 
-  // Get multiple tiles for a region
+  // Get multiple tiles for a region with optimized concurrency
   async getTilesForRegion(type, heatmapType, bounds, zoom) {
-    const tiles = [];
     const { north, south, east, west } = bounds;
 
     const startTile = this.latLngToTile(north, west, zoom);
     const endTile = this.latLngToTile(south, east, zoom);
 
-    const promises = [];
+    // Optimize tile count based on zoom level
+    const maxTiles = zoom > 10 ? 16 : zoom > 8 ? 12 : 8; // More tiles for higher zoom
+    const tilePromises = [];
+    
     for (let x = startTile.x; x <= endTile.x; x++) {
       for (let y = startTile.y; y <= endTile.y; y++) {
+        if (tilePromises.length >= maxTiles) break;
+        
         const promise = (async () => {
           try {
             const tile = type === 'airquality' 
@@ -132,12 +151,27 @@ class HeatmapService {
             return null;
           }
         })();
-        promises.push(promise);
+        tilePromises.push(promise);
+      }
+      if (tilePromises.length >= maxTiles) break;
+    }
+
+    // Process all tiles concurrently for faster response
+    const batchSize = 6; // Increased batch size
+    const results = [];
+    
+    for (let i = 0; i < tilePromises.length; i += batchSize) {
+      const batch = tilePromises.slice(i, i + batchSize);
+      const batchResults = await Promise.all(batch);
+      results.push(...batchResults.filter(result => result !== null));
+      
+      // Reduced delay between batches for faster response
+      if (i + batchSize < tilePromises.length) {
+        await new Promise(resolve => setTimeout(resolve, 50)); // Reduced from 100ms to 50ms
       }
     }
 
-    const results = await Promise.all(promises);
-    return results.filter(result => result !== null);
+    return results;
   }
 
   // Get tiles for current viewport
@@ -172,17 +206,24 @@ class HeatmapService {
   // Get available heatmap types
   async getAvailableHeatmapTypes() {
     try {
+      console.log('🔄 HeatmapService: Starting to fetch heatmap types...');
+      
       const [airQualityTypes, pollenTypes] = await Promise.all([
-        GoogleCloudAPIService.getAirQualityHeatmapTypes(),
-        GoogleCloudAPIService.getPollenHeatmapTypes()
+        this.googleCloudAPI.getAirQualityHeatmapTypes(),
+        this.googleCloudAPI.getPollenHeatmapTypes()
       ]);
 
-      return {
+      console.log('📊 HeatmapService: Received types:', { airQualityTypes, pollenTypes });
+
+      const result = {
         airQuality: airQualityTypes.mapTypes || [],
         pollen: pollenTypes.mapTypes || []
       };
+
+      console.log('✅ HeatmapService: Final result:', result);
+      return result;
     } catch (error) {
-      console.error('Error fetching heatmap types:', error);
+      console.error('❌ HeatmapService: Error fetching heatmap types:', error);
       return {
         airQuality: [],
         pollen: []

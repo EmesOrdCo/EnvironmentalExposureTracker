@@ -22,7 +22,6 @@ import CollapsibleLegend from '../components/CollapsibleLegend';
 import HeatmapMap from '../components/HeatmapMap';
 import HeatmapService from '../services/HeatmapService';
 import backendService from '../services/BackendService';
-import exposureTrackingService from '../services/ExposureTrackingService';
 
 const { width, height } = Dimensions.get('window');
 
@@ -30,8 +29,8 @@ const MapScreen = () => {
   const [location, setLocation] = useState(null);
   const [environmentalData, setEnvironmentalData] = useState([]);
   const [overlaySettings, setOverlaySettings] = useState({
-    pollen: true,
     airQuality: true,
+    pollen: false,
   });
   const [selectedType, setSelectedType] = useState('airQuality');
   const [selectedHeatmapTypes, setSelectedHeatmapTypes] = useState({
@@ -44,20 +43,22 @@ const MapScreen = () => {
     pollen: []
   });
   const [mapReady, setMapReady] = useState(false);
+  const [overlayState, setOverlayState] = useState({ isClearing: false, isLoading: false });
   const [backendStatus, setBackendStatus] = useState('checking');
-  const [exposureTrackingStatus, setExposureTrackingStatus] = useState('idle');
-  const [exposureSummary, setExposureSummary] = useState(null);
-  const [isTrackingExposure, setIsTrackingExposure] = useState(false);
+  const [debugInfo, setDebugInfo] = useState('');
 
   useEffect(() => {
     getCurrentLocation();
     checkBackendHealth();
-    initializeExposureTracking();
   }, []);
 
   useEffect(() => {
+    console.log('📍 Location useEffect triggered, location:', location);
     if (location) {
+      console.log('📍 Location available, calling loadHeatmapTypes');
       loadHeatmapTypes();
+    } else {
+      console.log('📍 No location yet, waiting...');
     }
   }, [location]);
 
@@ -70,29 +71,37 @@ const MapScreen = () => {
 
   const getCurrentLocation = async () => {
     try {
+      console.log('📍 Getting current location...');
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
+        console.log('📍 Location permission denied, using default location');
         Alert.alert('Permission Denied', 'Location permission is required to show your location on the map.');
         // Use default location (New York City)
-        setLocation({
+        const defaultLocation = {
           latitude: 40.7128,
           longitude: -74.0060,
-        });
+        };
+        console.log('📍 Setting default location:', defaultLocation);
+        setLocation(defaultLocation);
         return;
       }
 
       const currentLocation = await Location.getCurrentPositionAsync({});
-      setLocation({
+      const locationData = {
         latitude: currentLocation.coords.latitude,
         longitude: currentLocation.coords.longitude,
-      });
+      };
+      console.log('📍 Setting current location:', locationData);
+      setLocation(locationData);
     } catch (error) {
-      console.error('Error getting location:', error);
+      console.error('📍 Error getting location:', error);
       // Use default location
-      setLocation({
+      const defaultLocation = {
         latitude: 40.7128,
         longitude: -74.0060,
-      });
+      };
+      console.log('📍 Setting default location due to error:', defaultLocation);
+      setLocation(defaultLocation);
     }
   };
 
@@ -114,167 +123,49 @@ const MapScreen = () => {
     }
   };
 
-  const initializeExposureTracking = async () => {
-    try {
-      console.log('🔍 Initializing exposure tracking...');
-      const success = await exposureTrackingService.initialize();
-      
-      if (success) {
-        setExposureTrackingStatus('ready');
-        console.log('✅ Exposure tracking initialized');
-      } else {
-        setExposureTrackingStatus('error');
-        console.error('❌ Failed to initialize exposure tracking');
-      }
-    } catch (error) {
-      console.error('❌ Exposure tracking initialization error:', error);
-      setExposureTrackingStatus('error');
-    }
-  };
-
-  const toggleExposureTracking = async () => {
-    try {
-      if (isTrackingExposure) {
-        // Stop tracking
-        const result = await exposureTrackingService.stopTracking();
-        if (result.success) {
-          setIsTrackingExposure(false);
-          setExposureTrackingStatus('stopped');
-          console.log('✅ Exposure tracking stopped');
-        } else {
-          console.error('❌ Failed to stop exposure tracking:', result.error);
-        }
-      } else {
-        // Start tracking
-        const result = await exposureTrackingService.startTracking();
-        if (result.success) {
-          setIsTrackingExposure(true);
-          setExposureTrackingStatus('tracking');
-          console.log('✅ Exposure tracking started');
-        } else {
-          console.error('❌ Failed to start exposure tracking:', result.error);
-        }
-      }
-    } catch (error) {
-      console.error('❌ Exposure tracking toggle error:', error);
-    }
-  };
-
-  const loadExposureSummary = async () => {
-    try {
-      const result = await exposureTrackingService.getDailySummary();
-      if (result.success) {
-        setExposureSummary(result.data);
-        console.log('✅ Loaded exposure summary:', result.data);
-      } else {
-        console.error('❌ Failed to load exposure summary:', result.error);
-      }
-    } catch (error) {
-      console.error('❌ Load exposure summary error:', error);
-    }
-  };
-
-  const renderExposureTrackingControls = () => (
-    <View style={styles.exposureTrackingContainer}>
-      <View style={styles.exposureTrackingHeader}>
-        <Text style={styles.exposureTrackingTitle}>Exposure Tracking</Text>
-        <View style={styles.statusIndicator}>
-          <View style={[
-            styles.statusDot,
-            { backgroundColor: getStatusColor(exposureTrackingStatus) }
-          ]} />
-          <Text style={styles.statusText}>{exposureTrackingStatus}</Text>
-        </View>
-      </View>
-      
-      <View style={styles.exposureTrackingButtons}>
-        <TouchableOpacity
-          style={[
-            styles.trackingButton,
-            isTrackingExposure && styles.trackingButtonActive
-          ]}
-          onPress={toggleExposureTracking}
-          disabled={exposureTrackingStatus === 'error'}
-        >
-          <MaterialIcons
-            name={isTrackingExposure ? 'stop' : 'play-arrow'}
-            size={16}
-            color={isTrackingExposure ? '#ffffff' : '#666'}
-          />
-          <Text style={[
-            styles.trackingButtonText,
-            isTrackingExposure && styles.trackingButtonTextActive
-          ]}>
-            {isTrackingExposure ? 'Stop Tracking' : 'Start Tracking'}
-          </Text>
-        </TouchableOpacity>
-        
-        <TouchableOpacity
-          style={styles.summaryButton}
-          onPress={loadExposureSummary}
-        >
-          <MaterialIcons name="assessment" size={16} color="#666" />
-          <Text style={styles.summaryButtonText}>Daily Summary</Text>
-        </TouchableOpacity>
-      </View>
-      
-      {exposureSummary && (
-        <View style={styles.exposureSummaryContainer}>
-          <Text style={styles.exposureSummaryTitle}>Today's Exposure</Text>
-          <View style={styles.exposureSummaryRow}>
-            <Text style={styles.exposureSummaryLabel}>Total Sessions:</Text>
-            <Text style={styles.exposureSummaryValue}>
-              {exposureSummary.summary?.total_sessions || 0}
-            </Text>
-          </View>
-          <View style={styles.exposureSummaryRow}>
-            <Text style={styles.exposureSummaryLabel}>Duration:</Text>
-            <Text style={styles.exposureSummaryValue}>
-              {exposureSummary.summary?.total_duration_minutes || 0} min
-            </Text>
-          </View>
-          <View style={styles.exposureSummaryRow}>
-            <Text style={styles.exposureSummaryLabel}>Overall Score:</Text>
-            <Text style={styles.exposureSummaryValue}>
-              {exposureSummary.summary?.total_overall_exposure || 0}
-            </Text>
-          </View>
-        </View>
-      )}
-    </View>
-  );
-
-  const getStatusColor = (status) => {
-    switch (status) {
-      case 'ready':
-      case 'tracking':
-        return '#4CAF50';
-      case 'stopped':
-        return '#FF9800';
-      case 'error':
-        return '#F44336';
-      default:
-        return '#9E9E9E';
-    }
-  };
+  // Exposure tracking UI removed from Map page (moved to History)
 
   const loadHeatmapTypes = async () => {
-    if (!location) return;
+    console.log('🔄 loadHeatmapTypes called, location:', location);
+    if (!location) {
+      console.log('❌ No location available, skipping heatmap types load');
+      return;
+    }
     
     try {
+      console.log('🔄 Loading heatmap types...');
       const types = await HeatmapService.getAvailableHeatmapTypes();
+      console.log('✅ HeatmapService returned types:', types);
       setAvailableHeatmapTypes(types);
-      console.log('Available heatmap types:', types);
+      console.log('✅ State updated with heatmap types:', types);
+      
+      // Set default heatmap types if none selected
+      if (!selectedHeatmapTypes.airQuality && types.airQuality?.length > 0) {
+        console.log('🎯 Setting default air quality type:', types.airQuality[0].name);
+        setSelectedHeatmapTypes(prev => ({
+          ...prev,
+          airQuality: types.airQuality[0].name
+        }));
+      }
+      if (!selectedHeatmapTypes.pollen && types.pollen?.length > 0) {
+        console.log('🎯 Setting default pollen type:', types.pollen[0].name);
+        setSelectedHeatmapTypes(prev => ({
+          ...prev,
+          pollen: types.pollen[0].name
+        }));
+      }
     } catch (error) {
-      console.error('Error loading heatmap types:', error);
+      console.error('❌ Error loading heatmap types:', error);
+      console.error('❌ Error stack:', error.stack);
     }
   };
 
   const toggleOverlay = (type) => {
-    setOverlaySettings(prev => ({
-      ...prev,
-      [type]: !prev[type],
-    }));
+    // Enforce single overlay active at a time
+    const next = { airQuality: false, pollen: false };
+    next[type] = true;
+    setOverlaySettings(next);
+    setSelectedType(type);
   };
 
   const renderMap = () => (
@@ -287,12 +178,33 @@ const MapScreen = () => {
       onRegionChange={(data) => {
         console.log('Map region changed:', data);
       }}
+      onOverlayStateChange={setOverlayState}
     />
   );
 
   const renderOverlayControls = () => (
     <View style={styles.overlayControls}>
-      <Text style={styles.overlayTitle}>Overlays</Text>
+      <View style={styles.overlayHeader}>
+        <Text style={styles.overlayTitle}>
+          Overlays
+          {overlayState.isClearing && (
+            <Text style={styles.statusText}> (Clearing...)</Text>
+          )}
+          {overlayState.isLoading && (
+            <Text style={styles.statusText}> (Loading...)</Text>
+          )}
+        </Text>
+        <TouchableOpacity
+          style={styles.debugButton}
+          onPress={() => {
+            // Send debug message to WebView
+            console.log('Debug overlays requested');
+            setDebugInfo('Debug message sent. Check console for details.');
+          }}
+        >
+          <Text style={styles.debugButtonText}>Debug</Text>
+        </TouchableOpacity>
+      </View>
       
       <View style={styles.buttonRow}>
         {['airQuality', 'pollen'].map((type) => {
@@ -304,28 +216,26 @@ const MapScreen = () => {
               key={type}
               style={[
                 styles.overlayButton,
-                isEnabled && styles.overlayButtonActive,
+                (selectedType === type) && styles.overlayButtonActive,
                 isSelected && styles.overlayButtonSelected,
               ]}
               onPress={() => {
-                // Toggle overlay and select type in one action
                 toggleOverlay(type);
-                setSelectedType(type);
               }}
               activeOpacity={0.7}
             >
               <MaterialIcons
                 name={getExposureIcon(type)}
                 size={16}
-                color={isEnabled ? '#ffffff' : '#666'}
+                color={selectedType === type ? '#ffffff' : '#666'}
               />
               <Text style={[
                 styles.overlayButtonText,
-                isEnabled && styles.overlayButtonTextActive,
+                (selectedType === type) && styles.overlayButtonTextActive,
               ]}>
                 {type === 'airQuality' ? 'Air' : 'Pollen'}
               </Text>
-              {isSelected && isEnabled && (
+              {isSelected && (
                 <View style={styles.selectedIndicator}>
                   <MaterialIcons name="check" size={12} color="#ffffff" />
                 </View>
@@ -340,11 +250,21 @@ const MapScreen = () => {
   const renderHeatmapTypeSelector = () => {
     const types = availableHeatmapTypes[selectedType] || [];
     
+    // Debug logging
+    console.log(`🔍 Type Selector Debug:`, {
+      selectedType,
+      hasAvailableTypes: Object.keys(availableHeatmapTypes).length > 0,
+      typesForSelected: types.length,
+      availableHeatmapTypes
+    });
+    
     return (
       <View style={styles.heatmapTypeSelector}>
-        <Text style={styles.heatmapTypeTitle}>Type</Text>
+        <Text style={styles.heatmapTypeTitle}>
+          Type ({selectedType}) {types.length > 0 ? `- ${types.length} available` : '- Loading...'}
+        </Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-          {types.map((type) => (
+          {types.length > 0 ? types.map((type) => (
             <TouchableOpacity
               key={type.name}
               style={[
@@ -363,7 +283,11 @@ const MapScreen = () => {
                 {type.displayName}
               </Text>
             </TouchableOpacity>
-          ))}
+          )) : (
+            <View style={styles.loadingTypesContainer}>
+              <Text style={styles.loadingTypesText}>Loading types...</Text>
+            </View>
+          )}
         </ScrollView>
       </View>
     );
@@ -428,18 +352,17 @@ const MapScreen = () => {
         <Text style={styles.headerSubtitle}>Track environmental conditions in your area</Text>
       </LinearGradient>
 
+      {/* Controls - Moved to top */}
+      <View style={styles.topControlsContainer}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.overlayScrollView}>
+          {renderOverlayControls()}
+        </ScrollView>
+        {renderHeatmapTypeSelector()}
+      </View>
+
       {/* Map */}
       <View style={styles.mapContainer}>
         {renderMap()}
-      </View>
-
-      {/* Controls */}
-      <View style={styles.controlsContainer}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-          {renderOverlayControls()}
-        </ScrollView>
-        {mapReady && renderHeatmapTypeSelector()}
-        {renderExposureTrackingControls()}
       </View>
 
       {/* Summary */}
@@ -503,6 +426,30 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 2,
   },
+  topControlsContainer: {
+    backgroundColor: '#ffffff',
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    elevation: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e0e0e0',
+  },
+  overlayScrollView: {
+    marginBottom: 8,
+  },
+  loadingTypesContainer: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  loadingTypesText: {
+    color: '#666',
+    fontSize: 14,
+    fontStyle: 'italic',
+  },
   overlayControls: {
     paddingHorizontal: 16,
     marginBottom: 8,
@@ -512,6 +459,29 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#333',
     marginBottom: 8,
+  },
+  overlayHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  debugButton: {
+    backgroundColor: '#ff6b6b',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 4,
+  },
+  debugButtonText: {
+    fontSize: 10,
+    color: '#ffffff',
+    fontWeight: '500',
+  },
+  statusText: {
+    fontSize: 12,
+    fontWeight: '400',
+    color: '#666',
+    fontStyle: 'italic',
   },
 
   buttonRow: {

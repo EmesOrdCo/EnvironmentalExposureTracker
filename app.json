@@ -14,7 +14,10 @@
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "This app needs access to location to track environmental exposures in your area.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "This app needs access to location to track environmental exposures in your area.",
-        "UIBackgroundModes": ["location", "fetch"]
+        "UIBackgroundModes": [
+          "location",
+          "fetch"
+        ]
       }
     },
     "android": {
@@ -49,7 +52,8 @@
           "icon": "./assets/notification-icon.png",
           "color": "#4CAF50"
         }
-      ]
+      ],
+      "expo-sqlite"
     ],
     "permissions": [
       "ACCESS_FINE_LOCATION",
